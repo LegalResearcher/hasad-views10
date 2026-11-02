@@ -209,7 +209,7 @@ def main():
         account_number, username, password = select_rotating_account(os.environ, STATE_DIR)
         log(
             f"🚀 تشغيل حصاد | القناة: @{TARGET_CHANNEL} | "
-            f"الحساب رقم {account_number} من 5 | {len(links)} روابط"
+            f"الحساب رقم {account_number} من 3 | {len(links)} روابط"
         )
         with BrowserSender(username, password) as sender:
             return run_browser_send(sender, links)
