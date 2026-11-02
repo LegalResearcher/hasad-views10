@@ -1,5 +1,3 @@
-import hashlib
-import json
 import os
 import re
 import sys
@@ -16,10 +14,7 @@ STATE_DIR = os.path.join(ROOT, "state")
 os.makedirs(STATE_DIR, exist_ok=True)
 LINKS_PATH = os.path.join(STATE_DIR, "telegram_links.txt")
 PROCESSED_PATH = os.path.join(STATE_DIR, "processed_links.txt")
-BATCH_HISTORY_PATH = os.path.join(STATE_DIR, "previous_batch_links.json")
-PREVIOUS_BATCH_FALLBACK_PATH = os.path.join(STATE_DIR, "previous_batch_fallback.json")
 TARGET_CHANNEL = "hasadalyoum"
-FALLBACK_MAX_ATTEMPTS = 3
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 "
                   "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
@@ -60,51 +55,6 @@ def append_unique(path, links):
         write_lines(path, existing + additions)
 
 
-def save_json(path, value):
-    directory = os.path.dirname(os.path.abspath(path))
-    fd, temp_path = tempfile.mkstemp(prefix=".state-", dir=directory, text=True)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as file:
-            json.dump(value, file, ensure_ascii=False, indent=2)
-            file.write("\n")
-            file.flush()
-            os.fsync(file.fileno())
-        os.replace(temp_path, path)
-    finally:
-        if os.path.exists(temp_path):
-            os.unlink(temp_path)
-
-
-def batch_fingerprint(batch):
-    serialized = json.dumps(batch, ensure_ascii=False, separators=(",", ":"))
-    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
-
-
-def fallback_attempts(batch):
-    if not os.path.exists(PREVIOUS_BATCH_FALLBACK_PATH):
-        return 0
-    try:
-        with open(PREVIOUS_BATCH_FALLBACK_PATH, "r", encoding="utf-8") as file:
-            marker = json.load(file)
-        if not isinstance(marker, dict) or marker.get("batch_fingerprint") != batch_fingerprint(batch):
-            return 0
-        attempts = marker.get("attempts", 1)
-        return attempts if isinstance(attempts, int) and not isinstance(attempts, bool) else 0
-    except (OSError, ValueError):
-        return 0
-
-
-def load_batch_history():
-    if not os.path.exists(BATCH_HISTORY_PATH):
-        return []
-    try:
-        with open(BATCH_HISTORY_PATH, "r", encoding="utf-8") as file:
-            value = json.load(file)
-        return [batch for batch in value if isinstance(batch, list)] if isinstance(value, list) else []
-    except (OSError, ValueError):
-        return []
-
-
 def fetch_links():
     response = requests.get(
         f"https://t.me/s/{TARGET_CHANNEL}", headers=HEADERS, timeout=30
@@ -117,53 +67,22 @@ def fetch_links():
     return [f"https://t.me/{TARGET_CHANNEL}/{number}" for number in ids]
 
 
-def pull_once(include_previous=True):
+def pull_once():
     discovered = fetch_links()
     processed = set(read_lines(PROCESSED_PATH))
     current_batch = [link for link in discovered if link not in processed]
     if not current_batch:
         pending = read_lines(LINKS_PATH)
         if pending:
-            log(f"🔁 لا توجد روابط جديدة؛ استرجاع {len(pending)} روابط معلّقة من تشغيل سابق.")
+            log(f"🔁 استكمال {len(pending)} روابط لم يصلها التنفيذ في تشغيل سابق.")
             return pending
-        if include_previous:
-            history = load_batch_history()
-            previous_batches = history[:2]
-            previous_batch_links = list(dict.fromkeys(
-                link for batch in previous_batches for link in batch
-            ))
-            attempts = fallback_attempts(previous_batch_links)
-            if previous_batch_links and attempts < FALLBACK_MAX_ATTEMPTS:
-                next_attempt = attempts + 1
-                save_json(
-                    PREVIOUS_BATCH_FALLBACK_PATH,
-                    {
-                        "batch_fingerprint": batch_fingerprint(previous_batch_links),
-                        "attempts": next_attempt,
-                    },
-                )
-                log(
-                    f"🔁 لا توجد روابط جديدة؛ معالجة آخر دفعتين سابقتين "
-                    f"({len(previous_batch_links)} رابط) — المحاولة {next_attempt}/"
-                    f"{FALLBACK_MAX_ATTEMPTS}."
-                )
-                return previous_batch_links
-        log("🔎 لا توجد روابط جديدة أو معلّقة أو دفعة سابقة متاحة لإعادة التشغيل.")
+        log("🔎 لا توجد روابط جديدة.")
         return []
-
-    history = load_batch_history()
-    previous_batch = history[0] if history else []
-    selected = list(dict.fromkeys(current_batch + (previous_batch if include_previous else [])))
 
     append_unique(LINKS_PATH, current_batch)
     write_lines(PROCESSED_PATH, list(dict.fromkeys(read_lines(PROCESSED_PATH) + current_batch)))
-    save_json(BATCH_HISTORY_PATH, [current_batch] + history)
-    log(
-        f"🆕 الدفعة الجديدة: {len(current_batch)} رابط؛ "
-        f"الدفعة السابقة المضافة: {len(previous_batch)} رابط؛ "
-        f"الإجمالي لهذا التشغيل: {len(selected)} رابط."
-    )
-    return selected
+    log(f"🆕 عُثر على {len(current_batch)} رابط جديد؛ سيُعالج كل رابط مرة واحدة فقط.")
+    return current_batch
 
 
 def remove_from_queue(links):

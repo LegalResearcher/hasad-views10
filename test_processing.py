@@ -23,13 +23,9 @@ class BatchProcessingTests(unittest.TestCase):
         self.old_paths = (
             main.LINKS_PATH,
             main.PROCESSED_PATH,
-            main.BATCH_HISTORY_PATH,
-            main.PREVIOUS_BATCH_FALLBACK_PATH,
         )
         main.LINKS_PATH = os.path.join(self.state, "telegram_links.txt")
         main.PROCESSED_PATH = os.path.join(self.state, "processed_links.txt")
-        main.BATCH_HISTORY_PATH = os.path.join(self.state, "previous_batch_links.json")
-        main.PREVIOUS_BATCH_FALLBACK_PATH = os.path.join(self.state, "previous_batch_fallback.json")
         for path in (main.LINKS_PATH, main.PROCESSED_PATH):
             open(path, "w", encoding="utf-8").close()
 
@@ -37,8 +33,6 @@ class BatchProcessingTests(unittest.TestCase):
         (
             main.LINKS_PATH,
             main.PROCESSED_PATH,
-            main.BATCH_HISTORY_PATH,
-            main.PREVIOUS_BATCH_FALLBACK_PATH,
         ) = self.old_paths
         self.temp.cleanup()
 
@@ -51,77 +45,45 @@ class BatchProcessingTests(unittest.TestCase):
         self.assertEqual(sender.calls, batch)
         self.assertEqual(main.read_lines(main.LINKS_PATH), [])
 
-    def test_next_run_processes_new_batch_then_previous_batch(self):
+    def test_next_run_processes_only_new_links_not_previous_batch(self):
         first = ["https://t.me/hasadalyoum/1", "https://t.me/hasadalyoum/2"]
         second = ["https://t.me/hasadalyoum/3", "https://t.me/hasadalyoum/4"]
         with patch.object(main, "fetch_links", return_value=first):
             selected_first = main.pull_once()
-        main.run_browser_send(FakeSender(), selected_first)
+        first_sender = FakeSender()
+        main.run_browser_send(first_sender, selected_first)
+        self.assertEqual(first_sender.calls, first)
         with patch.object(main, "fetch_links", return_value=first + second):
             selected_second = main.pull_once()
-        self.assertEqual(selected_second, second + first)
+        self.assertEqual(selected_second, second)
         sender = FakeSender()
         self.assertEqual(main.run_browser_send(sender, selected_second), 0)
-        self.assertEqual(sender.calls, second + first)
+        self.assertEqual(sender.calls, second)
 
-    def test_no_new_posts_reprocesses_last_two_batches_three_times(self):
-        first = ["https://t.me/hasadalyoum/11", "https://t.me/hasadalyoum/12"]
-        second = ["https://t.me/hasadalyoum/13"]
-        with patch.object(main, "fetch_links", return_value=first):
-            main.run_browser_send(FakeSender(), main.pull_once())
-        with patch.object(main, "fetch_links", return_value=first + second):
-            new_selection = main.pull_once()
-        self.assertEqual(new_selection, second + first)
-        main.run_browser_send(FakeSender(), new_selection)
-
-        for _ in range(3):
-            with patch.object(main, "fetch_links", return_value=first + second):
-                fallback_selection = main.pull_once()
-            self.assertEqual(fallback_selection, second + first)
-            sender = FakeSender()
-            self.assertEqual(main.run_browser_send(sender, fallback_selection), 0)
-            self.assertEqual(sender.calls, second + first)
-
-        with patch.object(main, "fetch_links", return_value=first + second):
+    def test_no_new_posts_does_not_replay_completed_links(self):
+        batch = ["https://t.me/hasadalyoum/11", "https://t.me/hasadalyoum/12"]
+        with patch.object(main, "fetch_links", return_value=batch):
+            first_selection = main.pull_once()
+        sender = FakeSender()
+        self.assertEqual(main.run_browser_send(sender, first_selection), 0)
+        self.assertEqual(sender.calls, batch)
+        with patch.object(main, "fetch_links", return_value=batch):
             self.assertEqual(main.pull_once(), [])
 
-    def test_new_batch_allows_one_fallback_again(self):
-        first = ["https://t.me/hasadalyoum/21"]
-        second = ["https://t.me/hasadalyoum/22"]
-        with patch.object(main, "fetch_links", return_value=first):
-            main.run_browser_send(FakeSender(), main.pull_once())
-        for _ in range(3):
-            with patch.object(main, "fetch_links", return_value=first):
-                fallback = main.pull_once()
-            self.assertEqual(fallback, first)
-            main.run_browser_send(FakeSender(), fallback)
-        with patch.object(main, "fetch_links", return_value=first):
-            self.assertEqual(main.pull_once(), [])
-
-        with patch.object(main, "fetch_links", return_value=first + second):
-            new_batch = main.pull_once()
-        self.assertEqual(new_batch, second + first)
-        main.run_browser_send(FakeSender(), new_batch)
-        for _ in range(3):
-            with patch.object(main, "fetch_links", return_value=first + second):
-                next_fallback = main.pull_once()
-            self.assertEqual(next_fallback, second + first)
-            main.run_browser_send(FakeSender(), next_fallback)
-        with patch.object(main, "fetch_links", return_value=first + second):
-            self.assertEqual(main.pull_once(), [])
-
-    def test_third_run_uses_immediate_previous_batch_only(self):
-        first = ["https://t.me/hasadalyoum/1"]
-        second = ["https://t.me/hasadalyoum/2"]
-        third = ["https://t.me/hasadalyoum/3"]
-        with patch.object(main, "fetch_links", return_value=first):
-            main.run_browser_send(FakeSender(), main.pull_once())
-        with patch.object(main, "fetch_links", return_value=first + second):
-            main.run_browser_send(FakeSender(), main.pull_once())
-        with patch.object(main, "fetch_links", return_value=first + second + third):
+    def test_only_unattempted_links_resume_after_fatal_stop(self):
+        batch = [f"https://t.me/hasadalyoum/{number}" for number in (21, 22, 23)]
+        with patch.object(main, "fetch_links", return_value=batch):
             selected = main.pull_once()
-        self.assertEqual(selected, third + second)
-        self.assertNotIn(first[0], selected)
+        stopped = FakeSender("fatal")
+        self.assertEqual(main.run_browser_send(stopped, selected), 1)
+        self.assertEqual(stopped.calls, [batch[0]])
+
+        with patch.object(main, "fetch_links", return_value=batch):
+            pending = main.pull_once()
+        self.assertEqual(pending, batch[1:])
+        resumed = FakeSender()
+        self.assertEqual(main.run_browser_send(resumed, pending), 0)
+        self.assertEqual(resumed.calls, batch[1:])
 
 
 if __name__ == "__main__":
