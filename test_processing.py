@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 import main
+from processing_state import load_successes
 
 
 class FakeSender:
@@ -99,6 +100,21 @@ class BatchProcessingTests(unittest.TestCase):
         resumed = FakeSender()
         self.assertEqual(main.run_browser_send(resumed, fallback), 0)
         self.assertEqual(resumed.calls, [batch[1]])
+
+    def test_previous_links_repeat_until_five_successes_when_no_new_links(self):
+        link = "https://t.me/hasadalyoum/41"
+        with open(os.path.join(self.state, "processed_links.txt"), "w", encoding="utf-8") as file:
+            file.write(link + "\n")
+
+        for expected_successes in range(1, 6):
+            sender = FakeSender()
+            self.assertEqual(main.run_previous_links_until_five(sender, self.state), 0)
+            self.assertEqual(sender.calls, [link])
+            self.assertEqual(load_successes(self.state)[link], expected_successes)
+
+        finished = FakeSender()
+        self.assertEqual(main.run_previous_links_until_five(finished, self.state), 0)
+        self.assertEqual(finished.calls, [])
 
 
 if __name__ == "__main__":

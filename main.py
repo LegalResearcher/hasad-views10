@@ -8,6 +8,14 @@ import requests
 
 from account_rotation import select_rotating_account
 from browser_sender import BrowserSender
+from processing_state import (
+    MAX_FAILURES_PER_LINK,
+    MAX_SUCCESSES_PER_LINK,
+    can_process,
+    load_failures,
+    load_successes,
+    record_result,
+)
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 STATE_DIR = os.path.join(ROOT, "state")
@@ -119,6 +127,59 @@ def run_browser_send(sender, links):
     return 1 if failures else 0
 
 
+def run_previous_links_until_five(sender, state_dir=None):
+    """إعادة دفع الروابط السابقة عند عدم ظهور روابط جديدة، مثل الجنوب."""
+    state_dir = STATE_DIR if state_dir is None else state_dir
+    processed_path = os.path.join(state_dir, "processed_links.txt")
+    queue_path = os.path.join(state_dir, "telegram_links.txt")
+    attempts = load_failures(state_dir)
+    successes = load_successes(state_dir)
+
+    # الأحدث أولًا، مع إبقاء روابط الطابور غير المنفذة ضمن الأولوية.
+    all_links = list(dict.fromkeys(
+        list(reversed(read_lines(processed_path)))
+        + list(reversed(read_lines(queue_path)))
+    ))
+    eligible = [
+        link for link in all_links
+        if can_process(link, state_dir, successes, attempts)
+    ]
+    if not eligible:
+        log("💤 لا توجد روابط سابقة مؤهلة للدفع.")
+        return 0
+
+    max_tries = 5
+    log(f"🔁 لا توجد روابط جديدة؛ استكمال الروابط السابقة حتى {MAX_SUCCESSES_PER_LINK} نجاحات.")
+    failures = 0
+    tries = 0
+    for link in eligible:
+        if tries >= max_tries:
+            break
+        tries += 1
+        log(f"معالجة سابقة ({successes.get(link, 0)}/{MAX_SUCCESSES_PER_LINK} نجاح): {link}")
+        try:
+            status = sender(link)
+        except Exception as error:
+            log(f"⚠️ تعذر تنفيذ الرابط ({type(error).__name__}: {error})")
+            status = "fail"
+
+        if status == "fatal":
+            log("⏹️ توقف: تحقق من بيانات الدخول أو الرصيد.")
+            return 1
+        if status == "ok":
+            _, result = record_result(link, status, state_dir, successes, attempts)
+            if result == "success":
+                log(f"✅ نجاح الرابط: {successes[link]}/{MAX_SUCCESSES_PER_LINK}.")
+        else:
+            _, result = record_result(link, status, state_dir, successes, attempts)
+            failures += 1
+            if result == "failure_limit":
+                log(f"🚫 تم تخطي الرابط بعد {MAX_FAILURES_PER_LINK} محاولات فاشلة.")
+
+    log(f"انتهى تشغيل الروابط السابقة بعد {tries} طلبات؛ الحد 5 طلبات.")
+    return 1 if failures else 0
+
+
 
 def main():
     try:
@@ -134,14 +195,18 @@ def main():
 
     # مثل منطق الجنوب: فشل/غياب السحب لا يمنع استكمال الطابور الموجود.
     links = []
+    processed_before_pull = set(read_lines(PROCESSED_PATH))
+    fetch_failed = False
     try:
         links = pull_once()
     except Exception as error:
+        fetch_failed = True
         log(f"❌ تعذر سحب الروابط الجديدة ({type(error).__name__}: {error})")
 
-    # لا نخرج مبكرًا عند عدم وجود روابط جديدة؛ run_browser_send يفحص
-    # الطابور المتبقي ويعالج ما يمكن تنفيذه، أو يسجل أن الطابور فارغ.
     with BrowserSender(username, password) as sender:
+        has_new_links = any(link not in processed_before_pull for link in links)
+        if fetch_failed or not has_new_links:
+            return run_previous_links_until_five(sender)
         return run_browser_send(sender, links)
 
 
