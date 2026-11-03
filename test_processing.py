@@ -85,6 +85,21 @@ class BatchProcessingTests(unittest.TestCase):
         self.assertEqual(main.run_browser_send(resumed, pending), 0)
         self.assertEqual(resumed.calls, batch[1:])
 
+    def test_no_new_links_returns_unattempted_queue_for_fallback_processing(self):
+        batch = ["https://t.me/hasadalyoum/31", "https://t.me/hasadalyoum/32"]
+        with patch.object(main, "fetch_links", return_value=batch):
+            selected = main.pull_once()
+        stopped = FakeSender("fatal")
+        self.assertEqual(main.run_browser_send(stopped, selected), 1)
+        self.assertEqual(stopped.calls, [batch[0]])
+
+        with patch.object(main, "fetch_links", return_value=batch):
+            fallback = main.pull_once()
+        self.assertEqual(fallback, [batch[1]])
+        resumed = FakeSender()
+        self.assertEqual(main.run_browser_send(resumed, fallback), 0)
+        self.assertEqual(resumed.calls, [batch[1]])
+
 
 if __name__ == "__main__":
     unittest.main()

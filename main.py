@@ -122,22 +122,27 @@ def run_browser_send(sender, links):
 
 def main():
     try:
-        links = pull_once()
-        if not links:
-            return 0
         account_number, username, password = select_rotating_account(os.environ, STATE_DIR)
-        log(
-            f"🚀 تشغيل حصاد | القناة: @{TARGET_CHANNEL} | "
-            f"الحساب رقم {account_number} من 3 | {len(links)} روابط"
-        )
-        with BrowserSender(username, password) as sender:
-            return run_browser_send(sender, links)
     except (OSError, ValueError) as error:
         log(f"❌ تعذر اختيار الحساب؛ تحقق من الأسرار وحالة account_rotation.json: {error}")
         return 1
+
+    log(
+        f"🚀 تشغيل حصاد | القناة: @{TARGET_CHANNEL} | "
+        f"الحساب رقم {account_number} من 3"
+    )
+
+    # مثل منطق الجنوب: فشل/غياب السحب لا يمنع استكمال الطابور الموجود.
+    links = []
+    try:
+        links = pull_once()
     except Exception as error:
-        log(f"❌ خطأ في التشغيل: {type(error).__name__}: {error}")
-        return 1
+        log(f"❌ تعذر سحب الروابط الجديدة ({type(error).__name__}: {error})")
+
+    # لا نخرج مبكرًا عند عدم وجود روابط جديدة؛ run_browser_send يفحص
+    # الطابور المتبقي ويعالج ما يمكن تنفيذه، أو يسجل أن الطابور فارغ.
+    with BrowserSender(username, password) as sender:
+        return run_browser_send(sender, links)
 
 
 if __name__ == "__main__":
